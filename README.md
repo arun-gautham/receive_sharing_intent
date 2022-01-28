@@ -1,4 +1,5 @@
 # receive_sharing_intent
+This is an enhancement on https://github.com/KasemJaffer/receive_sharing_intent to use sqlite instead of userDefaults for advanced usage and processing and storing and analysing shared files
 
 A flutter plugin that enables flutter apps to receive sharing photos, videos, text, urls or any other file types from another app.
 
@@ -199,13 +200,22 @@ import UIKit
 import Social
 import MobileCoreServices
 import Photos
+import SQLite3
+import Swift
+
+extension Date {
+    func string(format: String) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = format
+        return formatter.string(from: self)
+    }
+}
 
 class ShareViewController: SLComposeServiceViewController {
     var hostAppBundleIdentifier = ""
     var appGroupId = ""
     let sharedKey = "ShareKey"
-    var sharedMedia: [SharedMediaFile] = []
-    var sharedText: [String] = []
+    var sharedData: [String] = []
     let imageContentType = kUTTypeImage as String
     let videoContentType = kUTTypeMovie as String
     let textContentType = kUTTypeText as String
@@ -216,43 +226,39 @@ class ShareViewController: SLComposeServiceViewController {
         return true
     }
 
-    private func loadIds() {
-        // loading Share extension App Id
-        let shareExtensionAppBundleIdentifier = Bundle.main.bundleIdentifier!;
-
-
-        // convert ShareExtension id to host app id
-        // By default it is remove last part of id after last point
-        // For example: com.test.ShareExtension -> com.test
-        let lastIndexOfPoint = shareExtensionAppBundleIdentifier.lastIndex(of: ".");
-        hostAppBundleIdentifier = String(shareExtensionAppBundleIdentifier[..<lastIndexOfPoint!]);
-
-        // loading custom AppGroupId from Build Settings or use group.<hostAppBundleIdentifier>
-        appGroupId = (Bundle.main.object(forInfoDictionaryKey: "AppGroupId") as? String) ?? "group.\(hostAppBundleIdentifier)";
-    }
-
+    
     override func viewDidLoad() {
         super.viewDidLoad();
-
+        print("View Loaded")
         // load group and app id from build info
         loadIds();
+        // Create the required schem if not exits
+        createTable();
     }
+    
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated);
+        print("View Disappeared")
+    }
+
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
 
         // This is called after the user selects Post. Do the upload of contentText and/or NSExtensionContext attachments.
+        print("posting message")
+        print(extensionContext!.inputItems[0])
         if let content = extensionContext!.inputItems[0] as? NSExtensionItem {
             if let contents = content.attachments {
                 for (index, attachment) in (contents).enumerated() {
                     if attachment.hasItemConformingToTypeIdentifier(imageContentType) {
                         handleImages(content: content, attachment: attachment, index: index)
-                    } else if attachment.hasItemConformingToTypeIdentifier(textContentType) {
-                        handleText(content: content, attachment: attachment, index: index)
+//                    } else if attachment.hasItemConformingToTypeIdentifier(textContentType) {
+//                        handleText(content: content, attachment: attachment, index: index)
                     } else if attachment.hasItemConformingToTypeIdentifier(fileURLType) {
                         handleFiles(content: content, attachment: attachment, index: index)
-                    } else if attachment.hasItemConformingToTypeIdentifier(urlContentType) {
-                        handleUrl(content: content, attachment: attachment, index: index)
+//                    } else if attachment.hasItemConformingToTypeIdentifier(urlContentType) {
+//                        handleUrl(content: content, attachment: attachment, index: index)
                     } else if attachment.hasItemConformingToTypeIdentifier(videoContentType) {
                         handleVideos(content: content, attachment: attachment, index: index)
                     }
@@ -269,18 +275,123 @@ class ShareViewController: SLComposeServiceViewController {
         // To add configuration options via table cells at the bottom of the sheet, return an array of SLComposeSheetConfigurationItem here.
         return []
     }
+    
+    private func loadIds() {
+        print("LOADING-ID");
+        // loading Share extension App Id
+        let shareExtensionAppBundleIdentifier = Bundle.main.bundleIdentifier!;
+
+        let lastIndexOfPoint = shareExtensionAppBundleIdentifier.lastIndex(of: ".");
+         hostAppBundleIdentifier = String(shareExtensionAppBundleIdentifier[..<lastIndexOfPoint!]);
+         appGroupId = (Bundle.main.object(forInfoDictionaryKey: "AppGroupId") as? String) ?? "group.\(hostAppBundleIdentifier)";
+        print("Load id:"+hostAppBundleIdentifier);
+    }
+    
+    private func openDatabase() -> OpaquePointer? {
+        var db: OpaquePointer?
+        let this = self
+        let dbPath = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: this.appGroupId)!
+            .appendingPathComponent("shared.db")
+        if sqlite3_open(dbPath.absoluteString, &db) == SQLITE_OK {
+          print("Successfully opened connection to database at \(dbPath)")
+        } else {
+          print("Unable to open database.")
+        }
+        return db
+      }
+    
+    private func createTable() {
+        let db = openDatabase()
+        var createTableStatement: OpaquePointer?
+        let createTableString = """
+                                Create table if not exists sharedData(
+                                Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                shared_path TEXT NOT NULL,
+                                type TEXT NOT NULL,
+                                thumbnail TEXT ,
+                                duration REAL DEFAULT 0.0 NOT NULL
+                                );
+                                """
+      if sqlite3_prepare_v2(db, createTableString, -1, &createTableStatement, nil) ==
+          SQLITE_OK {
+        if sqlite3_step(createTableStatement) == SQLITE_DONE {
+            print("\nContact table created.")
+            createIndex()
+        } else {
+          print("\nContact table is not created.")
+        }
+      } else {
+        print("\nCREATE TABLE statement is not prepared.")
+      }
+      sqlite3_finalize(createTableStatement)
+    }
+        
+    private func createIndex() {
+            let db = openDatabase()
+            let createIndexString = """
+                                    Create INDEX shared_data_type on
+                                    sharedData(type)
+                                    Create UNIQUE INDEX resourcename on
+                                    sharedData(shared_path)
+                                    );
+                                    """
+            if sqlite3_exec(db, createIndexString, nil, nil, nil) ==
+                SQLITE_OK {
+                  print("\nIndex created.")
+              } else {
+                  print(String(cString: sqlite3_errmsg(db)))
+                  print("\nIndex not created.")
+              }
+    }
+    
+        
+    private func insertData(filePath : String, duration: Double , filetype: String) -> Bool {
+        let db = openDatabase()
+        var insertStatement: OpaquePointer?
+        let insertStatementString = """
+            INSERT INTO sharedData (shared_path, type, thumbnail, duration) VALUES (?, ?, ?, ?);
+            """
+//        let uploadDate = Date().string(format: "yyyy-MM-dd")
+//        let uploadStatus = "tbu"
+        var status:Bool = false
+        if sqlite3_prepare_v2(db, insertStatementString, -1, &insertStatement, nil) == SQLITE_OK {
+            sqlite3_bind_text(insertStatement, 1, filePath, -1, nil )
+            sqlite3_bind_text(insertStatement, 2, filetype, -1, nil )
+            sqlite3_bind_text(insertStatement, 3, nil, -1, nil )
+            sqlite3_bind_double(insertStatement, 4, duration)
+            if sqlite3_step(insertStatement) == SQLITE_DONE {
+                  print("\nSuccessfully inserted row.")
+                    status = true
+                } else {
+                    print(String(cString: sqlite3_errmsg(db) ))
+                  print("\nCould not insert row.")
+                    status = false
+                }
+          } else {
+              print(String(cString: sqlite3_errmsg(db) ))
+            print("\nINSERT statement is not prepared.")
+              status = false
+          }
+        sqlite3_finalize(insertStatement)
+        return status
+    }
+        
+
 
     private func handleText (content: NSExtensionItem, attachment: NSItemProvider, index: Int) {
         attachment.loadItem(forTypeIdentifier: textContentType, options: nil) { [weak self] data, error in
 
             if error == nil, let item = data as? String, let this = self {
-
-                this.sharedText.append(item)
+                let inserted = this.insertData(filePath: item, duration: 0, filetype: "text")
+                if (inserted){
+                    this.sharedData.append(item)
+                }
 
                 // If this is the last item, save imagesData in userDefaults and redirect to host app
                 if index == (content.attachments?.count)! - 1 {
                     let userDefaults = UserDefaults(suiteName: this.appGroupId)
-                    userDefaults?.set(this.sharedText, forKey: this.sharedKey)
+                    userDefaults?.set(this.sharedData, forKey: this.sharedKey)
                     userDefaults?.synchronize()
                     this.redirectToHostApp(type: .text)
                 }
@@ -295,13 +406,16 @@ class ShareViewController: SLComposeServiceViewController {
         attachment.loadItem(forTypeIdentifier: urlContentType, options: nil) { [weak self] data, error in
 
             if error == nil, let item = data as? URL, let this = self {
-
-                this.sharedText.append(item.absoluteString)
+                
+                let inserted = this.insertData(filePath: item.absoluteString, duration: 0, filetype: "text")
+                if (inserted){
+                    this.sharedData.append(item.absoluteString)
+                }
 
                 // If this is the last item, save imagesData in userDefaults and redirect to host app
                 if index == (content.attachments?.count)! - 1 {
                     let userDefaults = UserDefaults(suiteName: this.appGroupId)
-                    userDefaults?.set(this.sharedText, forKey: this.sharedKey)
+                    userDefaults?.set(this.sharedData, forKey: this.sharedKey)
                     userDefaults?.synchronize()
                     this.redirectToHostApp(type: .text)
                 }
@@ -323,19 +437,24 @@ class ShareViewController: SLComposeServiceViewController {
                     .containerURL(forSecurityApplicationGroupIdentifier: this.appGroupId)!
                     .appendingPathComponent(fileName)
                 let copied = this.copyFile(at: url, to: newPath)
-                if(copied) {
-                    this.sharedMedia.append(SharedMediaFile(path: newPath.absoluteString, thumbnail: nil, duration: nil, type: .image))
+                let inserted = this.insertData(filePath: newPath.absoluteString, duration: 0, filetype: "image")
+                if(copied && inserted) {
+                    this.sharedData.append(newPath.absoluteString)
                 }
-
+                
                 // If this is the last item, save imagesData in userDefaults and redirect to host app
+                print("Synchronizing")
                 if index == (content.attachments?.count)! - 1 {
                     let userDefaults = UserDefaults(suiteName: this.appGroupId)
-                    userDefaults?.set(this.toData(data: this.sharedMedia), forKey: this.sharedKey)
+                    userDefaults?.set(this.sharedData, forKey: this.sharedKey)
                     userDefaults?.synchronize()
-                    this.redirectToHostApp(type: .media)
+                    print("Synchronized")
+                    this.redirectToHostApp(type: .image)
+                    
                 }
 
             } else {
+                print("Error Occured")
                  self?.dismissWithError()
             }
         }
@@ -351,20 +470,20 @@ class ShareViewController: SLComposeServiceViewController {
                 let newPath = FileManager.default
                     .containerURL(forSecurityApplicationGroupIdentifier: this.appGroupId)!
                     .appendingPathComponent(fileName)
+                guard let sharedFile = this.getSharedMediaFile(forVideo: newPath) else {
+                    return }
                 let copied = this.copyFile(at: url, to: newPath)
-                if(copied) {
-                    guard let sharedFile = this.getSharedMediaFile(forVideo: newPath) else {
-                        return
-                    }
-                    this.sharedMedia.append(sharedFile)
+                let inserted = this.insertData(filePath: newPath.absoluteString, duration: sharedFile.duration ?? 0, filetype: "video")
+                if(copied && inserted) {
+                    this.sharedData.append(newPath.absoluteString)
                 }
 
                 // If this is the last item, save imagesData in userDefaults and redirect to host app
                 if index == (content.attachments?.count)! - 1 {
                     let userDefaults = UserDefaults(suiteName: this.appGroupId)
-                    userDefaults?.set(this.toData(data: this.sharedMedia), forKey: this.sharedKey)
+                    userDefaults?.set(this.sharedData, forKey: this.sharedKey)
                     userDefaults?.synchronize()
-                    this.redirectToHostApp(type: .media)
+                    this.redirectToHostApp(type: .video)
                 }
 
             } else {
@@ -384,13 +503,14 @@ class ShareViewController: SLComposeServiceViewController {
                     .containerURL(forSecurityApplicationGroupIdentifier: this.appGroupId)!
                     .appendingPathComponent(fileName)
                 let copied = this.copyFile(at: url, to: newPath)
-                if (copied) {
-                    this.sharedMedia.append(SharedMediaFile(path: newPath.absoluteString, thumbnail: nil, duration: nil, type: .file))
+                let inserted = this.insertData(filePath: newPath.absoluteString, duration: 0 , filetype: "file")
+                if(copied && inserted) {
+                    this.sharedData.append(newPath.absoluteString)
                 }
 
                 if index == (content.attachments?.count)! - 1 {
                     let userDefaults = UserDefaults(suiteName: this.appGroupId)
-                    userDefaults?.set(this.toData(data: this.sharedMedia), forKey: this.sharedKey)
+                    userDefaults?.set(this.sharedData, forKey: this.sharedKey)
                     userDefaults?.synchronize()
                     this.redirectToHostApp(type: .file)
                 }
@@ -402,7 +522,7 @@ class ShareViewController: SLComposeServiceViewController {
     }
 
     private func dismissWithError() {
-        print("[ERROR] Error loading data!")
+        NSLog("[ERROR] Error loading data!")
         let alert = UIAlertController(title: "Error", message: "Error loading data", preferredStyle: .alert)
 
         let action = UIAlertAction(title: "Error", style: .cancel) { _ in
@@ -427,12 +547,15 @@ class ShareViewController: SLComposeServiceViewController {
             }
             responder = responder!.next
         }
+        
         extensionContext!.completeRequest(returningItems: [], completionHandler: nil)
     }
 
     enum RedirectType {
-        case media
+        case video
+        case image
         case text
+        case url
         case file
     }
 
@@ -451,6 +574,8 @@ class ShareViewController: SLComposeServiceViewController {
                     ex = "MP4"
                 case .file:
                     ex = "TXT"
+                case .other:
+                    ex = "none"
             }
         }
         return ex ?? "Unknown"
@@ -537,6 +662,7 @@ class ShareViewController: SLComposeServiceViewController {
         case image
         case video
         case file
+        case other
     }
 
     func toData(data: [SharedMediaFile]) -> Data {

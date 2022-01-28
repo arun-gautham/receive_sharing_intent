@@ -5,11 +5,11 @@ import 'package:flutter/services.dart';
 
 class ReceiveSharingIntent {
   static const MethodChannel _mChannel =
-  const MethodChannel('receive_sharing_intent/messages');
+      const MethodChannel('receive_sharing_intent/messages');
   static const EventChannel _eChannelMedia =
-  const EventChannel("receive_sharing_intent/events-media");
+      const EventChannel("receive_sharing_intent/events-media");
   static const EventChannel _eChannelLink =
-  const EventChannel("receive_sharing_intent/events-text");
+      const EventChannel("receive_sharing_intent/events-text");
 
   static Stream<List<SharedMediaFile>>? _streamMedia;
   static Stream<String>? _streamLink;
@@ -68,7 +68,7 @@ class ReceiveSharingIntent {
   static Stream<List<SharedMediaFile>> getMediaStream() {
     if (_streamMedia == null) {
       final stream =
-      _eChannelMedia.receiveBroadcastStream("media").cast<String?>();
+          _eChannelMedia.receiveBroadcastStream("media").cast<String?>();
       _streamMedia = stream.transform<List<SharedMediaFile>>(
         new StreamTransformer<String?, List<SharedMediaFile>>.fromHandlers(
           handleData: (String? data, EventSink<List<SharedMediaFile>> sink) {
@@ -76,6 +76,7 @@ class ReceiveSharingIntent {
               sink.add([]);
             } else {
               final encoded = jsonDecode(data);
+              print(encoded);
               sink.add(encoded
                   .map<SharedMediaFile>(
                       (file) => SharedMediaFile.fromJson(file))
@@ -160,4 +161,4 @@ class SharedMediaFile {
         type = SharedMediaType.values[json['type']];
 }
 
-enum SharedMediaType { IMAGE, VIDEO, FILE }
+enum SharedMediaType { IMAGE, VIDEO, FILE, OTHER }

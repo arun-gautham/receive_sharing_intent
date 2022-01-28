@@ -1,6 +1,17 @@
 import Flutter
 import UIKit
 import Photos
+import SQLite3
+import Swift
+
+extension Date {
+    func string(format: String) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = format
+        return formatter.string(from: self)
+    }
+}
+
 
 public class SwiftReceiveSharingIntentPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     static let kMessagesChannel = "receive_sharing_intent/messages";
@@ -71,6 +82,7 @@ public class SwiftReceiveSharingIntentPlugin: NSObject, FlutterPlugin, FlutterSt
     // Reference: https://developer.apple.com/documentation/uikit/uiapplicationdelegate/1622921-application
     public func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [AnyHashable : Any] = [:]) -> Bool {
         if let url = launchOptions[UIApplication.LaunchOptionsKey.url] as? URL {
+            
             if (hasMatchingSchemePrefix(url: url)) {
                 return handleUrl(url: url, setInitialData: true)
             }
@@ -97,6 +109,7 @@ public class SwiftReceiveSharingIntentPlugin: NSObject, FlutterPlugin, FlutterSt
     // If the URL does not include the module's prefix, then we return false to indicate our module's attempt to open the resource failed and others should be allowed to.
     // Reference: https://developer.apple.com/documentation/uikit/uiapplicationdelegate/1623112-application
     public func application(_ application: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey : Any] = [:]) -> Bool {
+
         if (hasMatchingSchemePrefix(url: url)) {
             return handleUrl(url: url, setInitialData: false)
         }
@@ -118,65 +131,67 @@ public class SwiftReceiveSharingIntentPlugin: NSObject, FlutterPlugin, FlutterSt
         return false
     }
     
+    private func openDatabase() -> OpaquePointer? {
+        let appGroupId = (Bundle.main.object(forInfoDictionaryKey: "AppGroupId") as? String) ?? "group.\(Bundle.main.bundleIdentifier!)"
+        var db: OpaquePointer?
+        let dbPath = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: appGroupId)!
+            .appendingPathComponent("shared.db")
+        if sqlite3_open(dbPath.absoluteString, &db) == SQLITE_OK {
+          print("Successfully opened connection to database at \(dbPath)")
+        } else {
+          print("Unable to open database.")
+        }
+        return db
+      }
+    
+    private func selectData(type: String) -> [SharedMediaFile] {
+        let db = openDatabase()
+        var selectStatement: OpaquePointer?
+        var files:[SharedMediaFile] = []
+        
+        let selectStatementString = """
+            select shared_path, type, thumbnail, duration from sharedData where type = '\(type)';
+            """
+        if sqlite3_prepare_v2(db, selectStatementString, -1, &selectStatement, nil) == SQLITE_OK {
+            while sqlite3_step(selectStatement) == SQLITE_ROW {
+                let path = String(cString: sqlite3_column_text(selectStatement, 0))
+                print(path)
+                print(String(cString: sqlite3_column_text(selectStatement, 1)))
+                let type:SharedMediaType = getMediaType(type: String(cString: sqlite3_column_text(selectStatement, 1)))
+//                let thumnail:String? = String(cString: sqlite3_column_text(selectStatement, 2))
+                let duration:Double = Double(sqlite3_column_double(selectStatement, 3))
+                let row = SharedMediaFile.init(path: path, thumbnail: nil, duration: duration, type: type)
+                files.append(row)
+            }
+        }
+        sqlite3_finalize(selectStatement)
+        return files
+    }
+    
     private func handleUrl(url: URL?, setInitialData: Bool) -> Bool {
         if let url = url {
-            let appDomain = Bundle.main.bundleIdentifier!
-            let appGroupId = (Bundle.main.object(forInfoDictionaryKey: "AppGroupId") as? String) ?? "group.\(Bundle.main.bundleIdentifier!)"
-            let userDefaults = UserDefaults(suiteName: appGroupId)
-            if url.fragment == "media" {
-                if let key = url.host?.components(separatedBy: "=").last,
-                    let json = userDefaults?.object(forKey: key) as? Data {
-                    let sharedArray = decode(data: json)
-                    let sharedMediaFiles: [SharedMediaFile] = sharedArray.compactMap {
-                        guard let path = getAbsolutePath(for: $0.path) else {
-                            return nil
-                        }
-                        if ($0.type == .video && $0.thumbnail != nil) {
-                            let thumbnail = getAbsolutePath(for: $0.thumbnail!)
-                            return SharedMediaFile.init(path: path, thumbnail: thumbnail, duration: $0.duration, type: $0.type)
-                        } else if ($0.type == .video && $0.thumbnail == nil) {
-                            return SharedMediaFile.init(path: path, thumbnail: nil, duration: $0.duration, type: $0.type)
-                        }
-                        
-                        return SharedMediaFile.init(path: path, thumbnail: nil, duration: $0.duration, type: $0.type)
-                    }
-                    latestMedia = sharedMediaFiles
-                    if(setInitialData) {
-                        initialMedia = latestMedia
-                    }
-                    eventSinkMedia?(toJson(data: latestMedia))
+            let type:String! = url.fragment
+            if type == "text" {
+                let sharedMediaFiles: [SharedMediaFile] = selectData(type: type)
+                var sharedArray:[String] = []
+                for file in sharedMediaFiles {
+                    sharedArray.append(file.path)
                 }
-            } else if url.fragment == "file" {
-                if let key = url.host?.components(separatedBy: "=").last,
-                    let json = userDefaults?.object(forKey: key) as? Data {
-                    let sharedArray = decode(data: json)
-                    let sharedMediaFiles: [SharedMediaFile] = sharedArray.compactMap{
-                        guard let path = getAbsolutePath(for: $0.path) else {
-                            return nil
-                        }
-                        return SharedMediaFile.init(path: $0.path, thumbnail: nil, duration: nil, type: $0.type)
-                    }
-                    latestMedia = sharedMediaFiles
-                    if(setInitialData) {
-                        initialMedia = latestMedia
-                    }
-                    eventSinkMedia?(toJson(data: latestMedia))
-                }
-            } else if url.fragment == "text" {
-                if let key = url.host?.components(separatedBy: "=").last,
-                    let sharedArray = userDefaults?.object(forKey: key) as? [String] {
-                    latestText =  sharedArray.joined(separator: ",")
-                    if(setInitialData) {
-                        initialText = latestText
-                    }
-                    eventSinkText?(latestText)
-                }
-            } else {
-                latestText = url.absoluteString
+                
+                latestText =  sharedArray.joined(separator: ",")
                 if(setInitialData) {
                     initialText = latestText
                 }
                 eventSinkText?(latestText)
+            } else {
+                let sharedMediaFiles: [SharedMediaFile] = selectData(type: type)
+                    latestMedia = sharedMediaFiles
+                    print(latestMedia)
+                    if(setInitialData) {
+                        initialMedia = latestMedia
+                    }
+                    eventSinkMedia?(toJson(data: latestMedia))
             }
             return true
         }
@@ -268,5 +283,11 @@ public class SwiftReceiveSharingIntentPlugin: NSObject, FlutterPlugin, FlutterSt
         case image
         case video
         case file
+        case other
+    }
+    
+    private func getMediaType(type: String) -> SharedMediaType{
+        let fileTypes:[String:SharedMediaType] = ["image":.image, "video":.video, "file":.file , "text":.other , "url":.other]
+        return fileTypes[type] ?? .other
     }
 }
