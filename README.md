@@ -1,5 +1,5 @@
 # receive_sharing_intent
-This is an enhancement on https://github.com/KasemJaffer/receive_sharing_intent to use sqlite instead of userDefaults for advanced usage and processing and storing and analysing shared files
+This is an enhancement on https://github.com/KasemJaffer/receive_sharing_intent to use sqlite instead of userDefaults on ios for advanced usage and processing and storing and analysing shared files
 
 A flutter plugin that enables flutter apps to receive sharing photos, videos, text, urls or any other file types from another app.
 
