@@ -156,10 +156,7 @@ public class SwiftReceiveSharingIntentPlugin: NSObject, FlutterPlugin, FlutterSt
         if sqlite3_prepare_v2(db, selectStatementString, -1, &selectStatement, nil) == SQLITE_OK {
             while sqlite3_step(selectStatement) == SQLITE_ROW {
                 let path = String(cString: sqlite3_column_text(selectStatement, 0))
-                print(path)
-                print(String(cString: sqlite3_column_text(selectStatement, 1)))
                 let type:SharedMediaType = getMediaType(type: String(cString: sqlite3_column_text(selectStatement, 1)))
-//                let thumnail:String? = String(cString: sqlite3_column_text(selectStatement, 2))
                 let duration:Double = Double(sqlite3_column_double(selectStatement, 3))
                 let row = SharedMediaFile.init(path: path, thumbnail: nil, duration: duration, type: type)
                 files.append(row)
@@ -168,12 +165,33 @@ public class SwiftReceiveSharingIntentPlugin: NSObject, FlutterPlugin, FlutterSt
         sqlite3_finalize(selectStatement)
         return files
     }
+
+    private func deleteData(type: String) {
+        let db = openDatabase()
+        var deleteStatement: OpaquePointer?
+        
+        let deleteStatementString = """
+            delete from sharedData  where type = '\(type)';
+            """
+        if sqlite3_prepare_v2(db, deleteStatementString, -1, &deleteStatement, nil) == SQLITE_OK {
+            if sqlite3_step(deleteStatement) == SQLITE_DONE {
+                print("Successfully deleted data")
+            } else {
+                print("Could not perform delete operation")
+            }
+
+        } else {
+            print("Could not perform delete operation")
+        }
+        sqlite3_finalize(deleteStatement)
+    }
     
     private func handleUrl(url: URL?, setInitialData: Bool) -> Bool {
         if let url = url {
             let type:String! = url.fragment
             if type == "text" {
                 let sharedMediaFiles: [SharedMediaFile] = selectData(type: type)
+                deleteData(type: type)
                 var sharedArray:[String] = []
                 for file in sharedMediaFiles {
                     sharedArray.append(file.path)
@@ -186,12 +204,12 @@ public class SwiftReceiveSharingIntentPlugin: NSObject, FlutterPlugin, FlutterSt
                 eventSinkText?(latestText)
             } else {
                 let sharedMediaFiles: [SharedMediaFile] = selectData(type: type)
-                    latestMedia = sharedMediaFiles
-                    print(latestMedia)
-                    if(setInitialData) {
-                        initialMedia = latestMedia
-                    }
-                    eventSinkMedia?(toJson(data: latestMedia))
+                deleteData(type: type)
+                latestMedia = sharedMediaFiles
+                if(setInitialData) {
+                    initialMedia = latestMedia
+                }
+                eventSinkMedia?(toJson(data: latestMedia))
             }
             return true
         }

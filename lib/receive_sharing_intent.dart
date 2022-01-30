@@ -76,7 +76,6 @@ class ReceiveSharingIntent {
               sink.add([]);
             } else {
               final encoded = jsonDecode(data);
-              print(encoded);
               sink.add(encoded
                   .map<SharedMediaFile>(
                       (file) => SharedMediaFile.fromJson(file))
